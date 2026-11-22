@@ -1,28 +1,38 @@
 # 📦 Recipe Box
 
-A personal recipe manager that runs in your browser, with data synced across your laptop and phone via Supabase. Multi-user — each account has its own private recipe collection.
+A personal recipe manager that runs in your browser, with data synced across your laptop and phone via Firebase. Multi-user — each account has its own private recipe collection.
 
-**Live URL** (after deployment): `https://jwnelly.github.io/Recipe-App/`
+**Live URL**: `https://jwnelly.github.io/Recipe-App/`
 
 ---
 
 ## Architecture
 
 - **Frontend**: TypeScript + Vite, vanilla DOM (no framework)
-- **Backend**: Supabase (Postgres + Auth + Row Level Security)
+- **Backend**: Firebase (Firestore database + email/password Authentication), free Spark plan — never pauses for inactivity
 - **Hosting**: GitHub Pages (static), deployed via GitHub Actions on every push to `main`
-- **Data sync**: Phone and laptop both talk to the same Supabase project, so checking off a grocery item on your laptop appears on your phone after a refresh
+- **Data sync**: Phone and laptop both talk to the same Firestore database, so checking off a grocery item on your laptop appears on your phone after a refresh
+
+Data layout in Firestore:
+
+```
+users/{uid}/recipes/{recipeId}
+users/{uid}/grocery/{itemId}
+```
+
+Security rules (`firestore.rules`) let each signed-in user read and write only their own `users/{uid}` subtree.
 
 ---
 
 ## One-time Setup
 
-### 1. Create the Supabase project
+### 1. Create the Firebase project
 
-1. Sign in at [supabase.com](https://supabase.com) and create a new project.
-2. Open **SQL Editor**, paste the contents of `supabase/schema.sql`, and run it. This creates the `recipes` and `grocery_items` tables with Row Level Security enabled.
-3. Open **Authentication → Providers** and enable **Email**. For fastest setup, disable "Confirm email" (you can re-enable later).
-4. Open **Project Settings → API**. Copy the **Project URL** and the **anon public** key — you'll need these next.
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) → **Create a project**. Google Analytics is not needed.
+2. **Build → Authentication → Get started → Sign-in method** → enable **Email/Password**.
+3. **Build → Firestore Database → Create database**. Pick a location near you and start in **production mode**.
+4. In Firestore, open the **Rules** tab, replace the contents with `firestore.rules` from this repo, and click **Publish**.
+5. **Project settings (⚙️) → General → Your apps** → click the web icon `</>` to register a web app (no Hosting needed). Copy the `apiKey`, `authDomain`, `projectId`, and `appId` values from the config it shows.
 
 ### 2. Configure local development
 
@@ -30,14 +40,9 @@ A personal recipe manager that runs in your browser, with data synced across you
 cp .env.example .env
 ```
 
-Open `.env` and paste your Supabase URL and anon key:
+Open `.env` and paste in the four Firebase values.
 
-```
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
-```
-
-> The anon key is **safe to commit/expose** — Row Level Security is what protects the data, not the key. But `.env` is gitignored anyway as a habit.
+> These values are **safe to expose** — Firebase web config is public by design; the security rules are what protect the data. `.env` is gitignored anyway as a habit.
 
 ### 3. Install dependencies
 
@@ -50,9 +55,11 @@ npm install
 In your GitHub repo:
 
 1. **Settings → Pages → Source: GitHub Actions**
-2. **Settings → Secrets and variables → Actions → New repository secret** — add:
-   - `VITE_SUPABASE_URL` (same value as your local `.env`)
-   - `VITE_SUPABASE_ANON_KEY` (same value as your local `.env`)
+2. **Settings → Secrets and variables → Actions → New repository secret** — add each of:
+   - `VITE_FIREBASE_API_KEY`
+   - `VITE_FIREBASE_AUTH_DOMAIN`
+   - `VITE_FIREBASE_PROJECT_ID`
+   - `VITE_FIREBASE_APP_ID`
 3. Push to `main`. The workflow `.github/workflows/deploy.yml` will build and deploy automatically.
 
 ---
@@ -79,15 +86,9 @@ git push
 
 ---
 
-## Migrating Recipes from the Old Local App
+## Moving Recipes Between Backends
 
-If you have a `recipes.json` from the previous Python-server version, here's how to import it:
-
-1. Open the deployed URL on your laptop.
-2. Sign up for an account (your first time).
-3. Click **Import** in the header.
-4. Drop in `recipes.json`, choose **Merge**.
-5. All your recipes appear under your new account.
+Use **Export** in the header to download `recipes.json`, then **Import** (mode: **Merge**) on the new setup. This works for recipes from the old Supabase version or the original Python-server version. The grocery list is not included in exports.
 
 ---
 
@@ -126,18 +127,17 @@ recipe-app/
 ├── tsconfig.json
 ├── vite.config.ts
 ├── .env.example                    # template — copy to .env locally
+├── firestore.rules                 # paste into Firestore → Rules
 ├── src/
 │   ├── main.ts                     # entry: auth bootstrap + all UI logic
 │   ├── styles.css                  # all styling
 │   ├── types.ts                    # Recipe, GroceryItem types
 │   ├── vite-env.d.ts               # Vite env var types
 │   └── lib/
-│       ├── supabase.ts             # Supabase client singleton
+│       ├── firebase.ts             # Firebase app, auth, and Firestore singletons
 │       ├── auth.ts                 # signUp / signIn / signOut / onAuthChange
-│       ├── recipes.ts              # recipes CRUD + camelCase↔snake_case mapping
-│       └── grocery.ts              # grocery_items CRUD
-├── supabase/
-│   └── schema.sql                  # run once in Supabase SQL editor
+│       ├── recipes.ts              # recipes CRUD + import
+│       └── grocery.ts              # grocery list CRUD
 ├── .github/workflows/
 │   └── deploy.yml                  # GitHub Actions: build + deploy to Pages
 └── README.md
@@ -147,14 +147,14 @@ recipe-app/
 
 ## Troubleshooting
 
-**"Missing Supabase config" error on load**
-You forgot to set the `.env` values (locally) or the GitHub secrets (in production).
+**"Missing Firebase config" error on load**
+The `.env` values (locally) or the GitHub secrets (in production) are missing.
 
-**Can't sign in / "Invalid credentials"**
-If you have email confirmation enabled in Supabase, check your email to confirm before signing in.
+**"Missing or insufficient permissions" when loading recipes**
+The Firestore rules weren't published. Paste `firestore.rules` into Firestore → Rules and click **Publish**.
 
 **Recipes don't appear after sign-up**
-Each user has their own collection — a brand-new account starts empty. Use Import to migrate from `recipes.json`.
+Each user has their own collection — a brand-new account starts empty. Use Import to bring in a `recipes.json`.
 
 **GitHub Pages shows the README instead of the app**
 Make sure **Settings → Pages → Source** is set to **GitHub Actions** (not "Deploy from a branch").

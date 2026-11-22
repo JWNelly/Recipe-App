@@ -1,6 +1,6 @@
 import QRCode from 'qrcode';
 import type { Recipe, RecipeInput, GroceryItem } from './types';
-import { signIn, signUp, signOut, getSession, onAuthChange } from './lib/auth';
+import { signIn, signUp, signOut, onAuthChange } from './lib/auth';
 import {
   loadRecipes,
   createRecipe,
@@ -77,13 +77,6 @@ function showAuthError(msg: string) {
   $('auth-success').classList.remove('show');
 }
 
-function showAuthSuccess(msg: string) {
-  const el = $('auth-success');
-  el.textContent = msg;
-  el.classList.add('show');
-  $('auth-error').classList.remove('show');
-}
-
 function hideAuthMessages() {
   $('auth-error').classList.remove('show');
   $('auth-success').classList.remove('show');
@@ -100,17 +93,11 @@ async function handleAuthSubmit(e: Event) {
   hideAuthMessages();
 
   try {
+    // Both sign the user in; onAuthChange handles the UI swap.
     if (authMode === 'signin') {
       await signIn(email, password);
-      // onAuthChange handles UI swap
     } else {
-      const result = await signUp(email, password);
-      if (result.session) {
-        // Auto-signed-in (email confirmation disabled)
-      } else {
-        showAuthSuccess('Check your email to confirm your account, then sign in.');
-        switchAuthTab('signin');
-      }
+      await signUp(email, password);
     }
   } catch (err) {
     showAuthError((err as Error).message || 'Authentication failed.');
@@ -124,7 +111,7 @@ function showAuthScreen() {
   $('app-shell').classList.remove('show');
 }
 
-function showAppShell(userEmail: string | undefined) {
+function showAppShell(userEmail: string | null) {
   $('auth-screen').classList.remove('show');
   $('app-shell').classList.add('show');
   $('user-badge').textContent = userEmail ?? '';
@@ -875,21 +862,13 @@ function wireUpEventListeners() {
 // Boot
 // ─────────────────────────────────────────────────────────────────
 
-async function boot() {
+function boot() {
   wireUpEventListeners();
 
-  const session = await getSession();
-  if (session) {
-    showAppShell(session.user.email);
-    await refreshGroceryList();
-    await refreshRecipes();
-  } else {
-    showAuthScreen();
-  }
-
-  onAuthChange(async (newSession) => {
-    if (newSession) {
-      showAppShell(newSession.user.email);
+  // Fires once on load with the restored user (or null), then on each sign-in/out.
+  onAuthChange(async (user) => {
+    if (user) {
+      showAppShell(user.email);
       await refreshGroceryList();
       await refreshRecipes();
     } else {

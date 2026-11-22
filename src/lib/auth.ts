@@ -1,49 +1,55 @@
-import type { Session, User } from '@supabase/supabase-js';
-import { supabase } from './supabase';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut as fbSignOut,
+  type User,
+} from 'firebase/auth';
+import { auth } from './firebase';
 
-export async function signUp(email: string, password: string) {
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) throw error;
-  return data;
+// Firebase error codes → messages worth showing on the sign-in screen.
+const AUTH_ERRORS: Record<string, string> = {
+  'auth/invalid-credential': 'Incorrect email or password.',
+  'auth/invalid-email': 'That email address is not valid.',
+  'auth/email-already-in-use': 'An account with that email already exists. Try signing in.',
+  'auth/weak-password': 'Password must be at least 6 characters.',
+  'auth/too-many-requests': 'Too many attempts. Wait a moment and try again.',
+  'auth/network-request-failed': 'Network error. Check your connection.',
+};
+
+function friendlyError(err: unknown): Error {
+  const code = (err as { code?: string }).code;
+  return new Error((code && AUTH_ERRORS[code]) || (err as Error).message || 'Authentication failed.');
 }
 
-export async function signIn(email: string, password: string) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  return data;
+/** Creates the account and signs the user in. */
+export async function signUp(email: string, password: string): Promise<User> {
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    return cred.user;
+  } catch (err) {
+    throw friendlyError(err);
+  }
+}
+
+export async function signIn(email: string, password: string): Promise<User> {
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    return cred.user;
+  } catch (err) {
+    throw friendlyError(err);
+  }
 }
 
 export async function signOut() {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
-}
-
-export async function getSession(): Promise<Session | null> {
-  const { data } = await supabase.auth.getSession();
-  return data.session;
-}
-
-export async function getCurrentUser(): Promise<User | null> {
-  const session = await getSession();
-  return session?.user ?? null;
+  await fbSignOut(auth);
 }
 
 /** Subscribe to auth changes. Returns an unsubscribe fn.
  *
- * We only react to events that represent a real session change:
- *   INITIAL_SESSION  – page first loads
- *   SIGNED_IN        – user just authenticated
- *   SIGNED_OUT       – user signed out (or session expired/revoked)
- *
- * TOKEN_REFRESHED fires silently in the background (e.g. when you switch
- * back to this tab) and does NOT represent a new sign-in — ignoring it
- * prevents an unnecessary UI re-render every time you change tabs.
+ * Fires once on page load with the restored user (or null), then on every
+ * sign-in / sign-out. Background token refreshes do not trigger it.
  */
-export function onAuthChange(cb: (session: Session | null) => void): () => void {
-  const { data } = supabase.auth.onAuthStateChange((event, session) => {
-    if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
-      cb(session);
-    }
-  });
-  return () => data.subscription.unsubscribe();
+export function onAuthChange(cb: (user: User | null) => void): () => void {
+  return onAuthStateChanged(auth, cb);
 }

@@ -1,5 +1,5 @@
-// Frontend-facing camelCase shape used throughout the UI.
-// The DB stores snake_case; mappers in src/lib/recipes.ts handle conversion.
+// Recipe shape used throughout the UI; Firestore documents store the same
+// fields (minus id, which is the document ID).
 export interface Recipe {
   id: string;
   title: string;

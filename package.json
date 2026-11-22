@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4",
+    "firebase": "^13.4.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

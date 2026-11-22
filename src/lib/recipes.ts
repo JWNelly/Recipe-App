@@ -1,82 +1,66 @@
-import { supabase } from './supabase';
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  updateDoc,
+  writeBatch,
+  type DocumentData,
+  type QueryDocumentSnapshot,
+} from 'firebase/firestore';
+import { db, requireUid } from './firebase';
 import type { Recipe, RecipeInput } from '../types';
 
-// Internal DB row shape (snake_case)
-interface RecipeRow {
-  id: string;
-  user_id: string;
-  title: string;
-  description: string | null;
-  servings: number | null;
-  prep_time: string | null;
-  cook_time: string | null;
-  tags: string[] | null;
-  ingredients: string[] | null;
-  instructions: string | null;
-  notes: string | null;
-  source_url: string | null;
-  created_at: string;
-  updated_at: string;
-}
+// Recipes live at users/{uid}/recipes/{recipeId}; security rules restrict
+// each user to their own subtree (see firestore.rules).
+const recipesCol = (uid: string) => collection(db, 'users', uid, 'recipes');
 
-function rowToRecipe(row: RecipeRow): Recipe {
+// Firestore batches are capped at 500 writes.
+const BATCH_LIMIT = 500;
+
+function docToRecipe(snap: QueryDocumentSnapshot<DocumentData>): Recipe {
+  const d = snap.data();
   return {
-    id: row.id,
-    title: row.title,
-    description: row.description,
-    servings: row.servings,
-    prepTime: row.prep_time,
-    cookTime: row.cook_time,
-    tags: row.tags ?? [],
-    ingredients: row.ingredients ?? [],
-    instructions: row.instructions,
-    notes: row.notes,
-    sourceUrl: row.source_url,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    id: snap.id,
+    title: d.title,
+    description: d.description ?? null,
+    servings: d.servings ?? null,
+    prepTime: d.prepTime ?? null,
+    cookTime: d.cookTime ?? null,
+    tags: d.tags ?? [],
+    ingredients: d.ingredients ?? [],
+    instructions: d.instructions ?? null,
+    notes: d.notes ?? null,
+    sourceUrl: d.sourceUrl ?? null,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
   };
 }
 
-function recipeToRowInsert(r: RecipeInput, userId: string) {
-  return {
-    user_id: userId,
-    title: r.title,
-    description: r.description ?? null,
-    servings: r.servings ?? null,
-    prep_time: r.prepTime ?? null,
-    cook_time: r.cookTime ?? null,
-    tags: r.tags ?? [],
-    ingredients: r.ingredients ?? [],
-    instructions: r.instructions ?? null,
-    notes: r.notes ?? null,
-    source_url: r.sourceUrl ?? null,
-  };
-}
-
-function recipeToRowUpdate(r: RecipeInput) {
+/** Normalizes input so no field is undefined (Firestore rejects undefined). */
+function toFields(r: RecipeInput) {
   return {
     title: r.title,
     description: r.description ?? null,
     servings: r.servings ?? null,
-    prep_time: r.prepTime ?? null,
-    cook_time: r.cookTime ?? null,
+    prepTime: r.prepTime ?? null,
+    cookTime: r.cookTime ?? null,
     tags: r.tags ?? [],
     ingredients: r.ingredients ?? [],
     instructions: r.instructions ?? null,
     notes: r.notes ?? null,
-    source_url: r.sourceUrl ?? null,
-    updated_at: new Date().toISOString(),
+    sourceUrl: r.sourceUrl ?? null,
   };
 }
 
 /** Load all recipes for the current user. Optional client-side text search. */
 export async function loadRecipes(search?: string): Promise<Recipe[]> {
-  const { data, error } = await supabase
-    .from('recipes')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) throw error;
-  let recipes = (data as RecipeRow[]).map(rowToRecipe);
+  const uid = requireUid();
+  const snap = await getDocs(query(recipesCol(uid), orderBy('createdAt', 'desc')));
+  let recipes = snap.docs.map(docToRecipe);
   if (search) {
     const q = search.toLowerCase();
     recipes = recipes.filter(
@@ -89,33 +73,23 @@ export async function loadRecipes(search?: string): Promise<Recipe[]> {
   return recipes;
 }
 
-export async function createRecipe(input: RecipeInput): Promise<Recipe> {
-  const { data: userData } = await supabase.auth.getUser();
-  const user = userData.user;
-  if (!user) throw new Error('Not signed in.');
-  const { data, error } = await supabase
-    .from('recipes')
-    .insert(recipeToRowInsert(input, user.id))
-    .select()
-    .single();
-  if (error) throw error;
-  return rowToRecipe(data as RecipeRow);
+export async function createRecipe(input: RecipeInput): Promise<void> {
+  const uid = requireUid();
+  const now = new Date().toISOString();
+  await addDoc(recipesCol(uid), { ...toFields(input), createdAt: now, updatedAt: now });
 }
 
-export async function updateRecipe(id: string, input: RecipeInput): Promise<Recipe> {
-  const { data, error } = await supabase
-    .from('recipes')
-    .update(recipeToRowUpdate(input))
-    .eq('id', id)
-    .select()
-    .single();
-  if (error) throw error;
-  return rowToRecipe(data as RecipeRow);
+export async function updateRecipe(id: string, input: RecipeInput): Promise<void> {
+  const uid = requireUid();
+  await updateDoc(doc(recipesCol(uid), id), {
+    ...toFields(input),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
-  const { error } = await supabase.from('recipes').delete().eq('id', id);
-  if (error) throw error;
+  const uid = requireUid();
+  await deleteDoc(doc(recipesCol(uid), id));
 }
 
 /** Bulk-import recipes (used by the Import UI). Returns { imported, skipped }. */
@@ -123,26 +97,25 @@ export async function importRecipes(
   recipes: unknown[],
   mode: 'merge' | 'replace'
 ): Promise<{ imported: number; skipped: number }> {
-  const { data: userData } = await supabase.auth.getUser();
-  const user = userData.user;
-  if (!user) throw new Error('Not signed in.');
+  const uid = requireUid();
+  const col = recipesCol(uid);
+  const existing = await getDocs(col);
 
-  if (mode === 'replace') {
-    const { error } = await supabase.from('recipes').delete().eq('user_id', user.id);
-    if (error) throw error;
-  }
+  // Every write goes into a queue that is flushed in batches of BATCH_LIMIT.
+  const ops: ((b: ReturnType<typeof writeBatch>) => void)[] = [];
 
-  // Fetch existing titles for de-dup in merge mode
   let existingTitles = new Set<string>();
-  if (mode === 'merge') {
-    const { data, error } = await supabase.from('recipes').select('title');
-    if (error) throw error;
-    existingTitles = new Set((data ?? []).map((r: { title: string }) => r.title.toLowerCase()));
+  if (mode === 'replace') {
+    for (const d of existing.docs) ops.push((b) => b.delete(d.ref));
+  } else {
+    existingTitles = new Set(existing.docs.map((d) => String(d.data().title).toLowerCase()));
   }
 
   let imported = 0;
   let skipped = 0;
-  const rowsToInsert: ReturnType<typeof recipeToRowInsert>[] = [];
+  // Give each recipe a distinct timestamp so the original order survives
+  // the createdAt sort (the export file is newest-first).
+  const base = Date.now();
 
   for (const item of recipes) {
     if (!item || typeof item !== 'object') {
@@ -158,29 +131,32 @@ export async function importRecipes(
       skipped++;
       continue;
     }
-    rowsToInsert.push(
-      recipeToRowInsert(
-        {
-          title: r.title,
-          description: r.description ?? null,
-          servings: r.servings ?? null,
-          prepTime: r.prepTime ?? null,
-          cookTime: r.cookTime ?? null,
-          tags: r.tags ?? [],
-          ingredients: r.ingredients ?? [],
-          instructions: r.instructions ?? null,
-          notes: r.notes ?? null,
-          sourceUrl: r.sourceUrl ?? null,
-        },
-        user.id
-      )
-    );
+    existingTitles.add(r.title.toLowerCase());
+    const createdAt = r.createdAt ?? new Date(base - imported).toISOString();
+    const fields = {
+      ...toFields({
+        title: r.title,
+        description: r.description,
+        servings: r.servings,
+        prepTime: r.prepTime,
+        cookTime: r.cookTime,
+        tags: r.tags ?? [],
+        ingredients: r.ingredients ?? [],
+        instructions: r.instructions,
+        notes: r.notes,
+        sourceUrl: r.sourceUrl,
+      }),
+      createdAt,
+      updatedAt: r.updatedAt ?? createdAt,
+    };
+    ops.push((b) => b.set(doc(col), fields));
     imported++;
   }
 
-  if (rowsToInsert.length > 0) {
-    const { error } = await supabase.from('recipes').insert(rowsToInsert);
-    if (error) throw error;
+  for (let i = 0; i < ops.length; i += BATCH_LIMIT) {
+    const batch = writeBatch(db);
+    for (const op of ops.slice(i, i + BATCH_LIMIT)) op(batch);
+    await batch.commit();
   }
 
   return { imported, skipped };
